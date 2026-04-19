@@ -18,6 +18,9 @@ description: 详细介绍 Better-Auth 在 Next.js 中的配置和使用
 7. [完整工作流程](#7-完整工作流程)
 8. [扩展配置](#8-扩展配置)
 9. [常见问题](#9-常见问题)
+10. [authClient 方法详解](#10-authclient-方法详解)
+11. [自定义账号登录](#11-自定义账号登录)
+12. [authClient 方法汇总表](#12-authclient-方法汇总表)
 
 ---
 
@@ -1103,9 +1106,692 @@ Better-Auth 是现代化的 TypeScript 认证方案，关键配置：
 
 ---
 
+## 10. authClient 方法详解
+
+### 10.1 创建客户端实例
+
+```tsx
+// src/server/better-auth/client.ts
+import { createAuthClient } from "better-auth/react";
+
+// 基础配置
+export const authClient = createAuthClient();
+
+// 自定义配置
+export const authClient = createAuthClient({
+  baseURL: process.env.NEXT_PUBLIC_APP_URL,  // API 基础路径
+  basePath: "/api/auth",                     // 认证路径
+  disableDefaultFetchPlugins: false,         // 是否禁用默认插件
+
+  // 插件配置（需要与服务端插件对应）
+  plugins: [
+    usernameClient(),  // 用户名登录插件
+  ],
+
+  // 生命周期钩子
+  fetchOptions: {
+    onSuccess: (ctx) => console.log("成功", ctx),
+    onError: (ctx) => console.log("失败", ctx),
+    onRequest: (ctx) => console.log("请求", ctx),
+    onResponse: (ctx) => console.log("响应", ctx),
+  },
+});
+
+// 类型导出
+export type Session = typeof authClient.$Infer.Session;
+export type User = typeof authClient.$Infer.User;
+```
+
+### 10.2 默认 API 路径
+
+所有方法默认调用 `/api/auth/*` 下的接口：
+
+```
+baseURL: "/api/auth"（默认）
+
+├── /sign-in/email      → POST  邮箱登录
+├── /sign-in/username   → POST  用户名登录（需插件）
+├── /sign-in/social     → POST  OAuth 登录
+├── /sign-up/email      → POST  邮箱注册
+├── /sign-out           → POST  登出
+├── /session            → GET   获取 session
+├── /update-user        → POST  更新用户
+├── /change-password    → POST  修改密码
+├── /delete-user        → POST  删除账户
+└── ... 更多接口
+```
+
+### 10.3 邮箱登录 `signIn.email()`
+
+```tsx
+// POST /api/auth/sign-in/email
+const result = await authClient.signIn.email({
+  email: "user@example.com",
+  password: "password123",
+  callbackURL: "/dashboard",  // 登录成功跳转（可选）
+  rememberMe: true,           // 记住登录状态（可选）
+});
+
+// 返回值结构
+result = {
+  data: {
+    user: {
+      id: "xxx",
+      email: "user@example.com",
+      name: "John",
+      image: "https://...",
+      emailVerified: true,
+      createdAt: "2024-01-01",
+      updatedAt: "2024-01-01",
+    },
+    session: {
+      id: "xxx",
+      userId: "xxx",
+      expiresAt: "2024-01-08",
+      token: "session-token",
+      ipAddress: "1.2.3.4",
+      userAgent: "Chrome/...",
+    },
+  },
+  error: null | { message: string, code: string },
+};
+```
+
+### 10.4 邮箱注册 `signUp.email()`
+
+```tsx
+// POST /api/auth/sign-up/email
+const result = await authClient.signUp.email({
+  email: "user@example.com",
+  password: "password123",
+  name: "John Doe",           // 可选
+  image: "https://...",       // 可选
+  callbackURL: "/welcome",    // 注册成功跳转（可选）
+});
+
+// 返回值结构
+result = {
+  data: {
+    user: { id, email, name, ... },
+    session: { id, userId, ... },
+    token: "verification-token",  // 需邮箱验证时返回
+  },
+  error: null | { message, code },
+};
+```
+
+### 10.5 OAuth 登录 `signIn.social()`
+
+```tsx
+// POST /api/auth/sign-in/social
+const result = await authClient.signIn.social({
+  provider: "github",         // github | google | discord | twitter | apple 等
+  callbackURL: "/dashboard",  // 登录成功跳转
+  errorCallbackURL: "/login", // 登录失败跳转（可选）
+  newUserCallbackURL: "/onboarding", // 新用户跳转（可选）
+  scopes: ["user", "repo"],   // 自定义 scope（可选）
+  disableRedirect: false,     // 是否禁用自动跳转
+});
+
+// disableRedirect: true 时返回 URL
+result = {
+  data: {
+    url: "https://github.com/login/oauth/authorize?...",
+    redirect: true,
+  },
+  error: null,
+};
+
+// 使用 idToken 直接登录（无需跳转）
+const result = await authClient.signIn.social({
+  provider: "google",
+  idToken: {
+    token: "google-id-token",
+    nonce: "optional-nonce",
+  },
+});
+```
+
+### 10.6 登出 `signOut()`
+
+```tsx
+// POST /api/auth/sign-out
+await authClient.signOut({
+  callbackURL: "/login",  // 登出后跳转（可选）
+  fetchOptions: {
+    onSuccess: () => {
+      console.log("已登出");
+      // 清理本地状态
+    },
+  },
+});
+```
+
+### 10.7 Session 管理
+
+#### 获取 Session `useSession()`
+
+```tsx
+'use client';
+
+import { authClient } from '@/server/better-auth/client';
+
+function Component() {
+  const { data, isPending, error, refetch } = authClient.useSession();
+
+  // data 结构
+  data = {
+    user: {
+      id: "xxx",
+      email: "user@example.com",
+      name: "John",
+      image: "https://...",
+      emailVerified: true,
+      createdAt: Date,
+      updatedAt: Date,
+    },
+    session: {
+      id: "xxx",
+      userId: "xxx",
+      expiresAt: Date,
+      token: "xxx",
+      ipAddress: "1.2.3.4",
+      userAgent: "Chrome/...",
+    },
+  } | null;
+
+  if (isPending) return <Spinner />;
+  if (error) return <Error error={error} />;
+  if (!data) return <LoginButton />;
+  return <UserMenu user={data.user} />;
+}
+```
+
+#### 查看所有登录设备 `listSessions()`
+
+```tsx
+// GET /api/auth/list-sessions
+const { data: sessions } = await authClient.listSessions();
+
+// 返回结构
+sessions = [
+  {
+    id: "session-1",
+    userId: "user-id",
+    expiresAt: "2024-01-08",
+    ipAddress: "192.168.1.1",
+    userAgent: "Chrome/Windows",
+    createdAt: "2024-01-01",
+  },
+  {
+    id: "session-2",
+    ipAddress: "10.0.0.1",
+    userAgent: "Safari/Mac",
+  },
+];
+```
+
+#### 撤销 Session
+
+```tsx
+// 撤销所有其他登录
+await authClient.revokeOtherSessions();
+
+// 撤销所有登录（包括当前）
+await authClient.revokeSessions();
+
+// 撤销指定 session
+await authClient.revokeSession({
+  token: "session-token",
+});
+```
+
+### 10.8 用户管理
+
+#### 更新用户信息 `updateUser()`
+
+```tsx
+// POST /api/auth/update-user
+const result = await authClient.updateUser({
+  name: "New Name",
+  image: "https://new-avatar.png",
+  // 其他自定义字段
+});
+
+result = {
+  data: {
+    user: { id, email, name: "New Name", ... },
+    success: true,
+  },
+  error: null,
+};
+```
+
+#### 修改邮箱 `changeEmail()`
+
+```tsx
+// POST /api/auth/change-email
+const result = await authClient.changeEmail({
+  newEmail: "new@example.com",
+  callbackURL: "/verified",  // 验证后跳转
+});
+```
+
+#### 删除账户 `deleteUser()`
+
+```tsx
+// POST /api/auth/delete-user
+await authClient.deleteUser({
+  callbackURL: "/",             // 删除后跳转
+  password: "current-password", // 需确认密码（可选）
+});
+```
+
+### 10.9 密码管理
+
+#### 修改密码 `changePassword()`
+
+```tsx
+// POST /api/auth/change-password
+const result = await authClient.changePassword({
+  newPassword: "newPassword123",
+  currentPassword: "oldPassword123",    // 当前密码
+  revokeOtherSessions: true,            // 撤销其他登录
+});
+```
+
+#### 重置密码流程
+
+```tsx
+// 步骤 1：请求重置
+await authClient.requestPasswordReset({
+  email: "user@example.com",
+  redirectTo: "/reset-password",  // 重置页面 URL
+});
+
+// 步骤 2：执行重置（用户收到邮件后）
+await authClient.resetPassword({
+  token: "reset-token-from-url",
+  newPassword: "newPassword123",
+});
+```
+
+### 10.10 邮箱验证
+
+```tsx
+// 发送验证邮件
+await authClient.sendVerificationEmail({
+  email: "user@example.com",
+  callbackURL: "/verified",
+});
+
+// 验证邮箱
+const result = await authClient.verifyEmail({
+  token: "verification-token-from-email",
+  callbackURL: "/dashboard",
+});
+```
+
+### 10.11 账户管理
+
+```tsx
+// 查看关联账户
+const { data: accounts } = await authClient.listUserAccounts();
+
+// 关联社交账户
+await authClient.linkSocialAccount({
+  provider: "github",
+  callbackURL: "/settings",
+});
+
+// 解绑账户
+await authClient.unlinkAccount({
+  providerId: "github",
+  accountId: "provider-account-id",
+});
+```
+
+### 10.12 内部属性
+
+```tsx
+const client = authClient;
+
+// 直接调用 API
+const response = await client.$fetch("/custom-endpoint", {
+  method: "POST",
+  body: { data: "value" },
+});
+
+// 状态管理
+client.$store.atoms.session;      // session 状态
+client.$store.notify("$sessionSignal");  // 手动刷新 session
+client.$store.listen("$sessionSignal", callback);  // 监听变化
+
+// 类型推导
+type Session = typeof authClient.$Infer.Session;
+type User = typeof authClient.$Infer.User;
+```
+
+---
+
+## 11. 自定义账号登录
+
+Better-Auth 默认使用邮箱登录，但可以通过插件支持**用户名登录**。
+
+### 11.1 启用用户名登录
+
+```tsx
+// src/server/better-auth/config.ts
+import { betterAuth } from "better-auth";
+import { username } from "better-auth/plugins/username";
+
+export const auth = betterAuth({
+  // 保留邮箱密码登录
+  emailAndPassword: {
+    enabled: true,
+  },
+
+  // 添加用户名插件
+  plugins: [
+    username({
+      // 用户名最小长度
+      minUsernameLength: 3,
+
+      // 用户名最大长度
+      maxUsernameLength: 30,
+
+      // 自定义用户名验证器
+      usernameValidator: async (username) => {
+        // 默认: /^[a-zA-Z0-9_.]+$/
+        return /^[a-zA-Z0-9_]+$/.test(username);
+      },
+
+      // 用户名规范化（默认小写）
+      usernameNormalization: (username) => username.toLowerCase(),
+    }),
+  ],
+
+  // 用户表添加 username 字段
+  user: {
+    additionalFields: {
+      username: {
+        type: "string",
+        unique: true,
+        required: false,
+      },
+    },
+  },
+});
+```
+
+### 11.2 客户端配置
+
+```tsx
+// src/server/better-auth/client.ts
+import { createAuthClient } from "better-auth/react";
+import { usernameClient } from "better-auth/plugins/username/client";
+
+export const authClient = createAuthClient({
+  plugins: [usernameClient()],
+});
+```
+
+### 11.3 用户名注册
+
+```tsx
+// 方式一：仅用户名
+await authClient.signUp.email({
+  username: "johndoe",      // 用户名
+  password: "password123",
+  name: "John Doe",         // 可选
+});
+
+// 方式二：用户名 + 邮箱
+await authClient.signUp.email({
+  email: "user@example.com",
+  username: "johndoe",
+  password: "password123",
+});
+```
+
+### 11.4 用户名登录
+
+```tsx
+// POST /api/auth/sign-in/username
+const result = await authClient.signIn.username({
+  username: "johndoe",
+  password: "password123",
+  callbackURL: "/dashboard",
+  rememberMe: true,
+});
+
+// 返回值与邮箱登录相同
+result = {
+  data: {
+    user: { id, username: "johndoe", email, ... },
+    session: { ... },
+  },
+  error: null,
+};
+```
+
+### 11.5 检查用户名可用性
+
+```tsx
+// POST /api/auth/is-username-available
+const { data } = await authClient.isUsernameAvailable({
+  username: "johndoe",
+});
+
+console.log(data.available);  // true 或 false
+```
+
+### 11.6 用户名规则配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `minUsernameLength` | 3 | 最小长度 |
+| `maxUsernameLength` | 30 | 最大长度 |
+| `usernameValidator` | `/^[a-zA-Z0-9_.]+$/` | 格式验证 |
+| `usernameNormalization` | `toLowerCase()` | 规范化处理 |
+
+### 11.7 自定义用户名验证
+
+```tsx
+// 只允许字母和数字，不允许特殊字符
+username({
+  usernameValidator: async (username) => {
+    return /^[a-zA-Z0-9]+$/.test(username);
+  },
+})
+
+// 允许中文用户名
+username({
+  usernameValidator: async (username) => {
+    return /^[\u4e00-\u9fa5a-zA-Z0-9]+$/.test(username);
+  },
+  minUsernameLength: 2,
+  maxUsernameLength: 20,
+})
+```
+
+### 11.8 完整登录页面示例（用户名版）
+
+```tsx
+// app/login/page.tsx
+'use client';
+
+import { authClient } from '@/server/better-auth/client';
+import { useState } from 'react';
+
+export default function LoginPage() {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+
+    const result = await authClient.signIn.username({
+      username,
+      password,
+      callbackURL: '/dashboard',
+    });
+
+    if (result.error) {
+      setError(result.error.message);
+    }
+  }
+
+  return (
+    <form onSubmit={handleLogin}>
+      <input
+        type="text"
+        value={username}
+        onChange={e => setUsername(e.target.value)}
+        placeholder="用户名"
+        required
+      />
+      <input
+        type="password"
+        value={password}
+        onChange={e => setPassword(e.target.value)}
+        placeholder="密码"
+        required
+      />
+      {error && <p className="error">{error}</p>}
+      <button>登录</button>
+    </form>
+  );
+}
+```
+
+---
+
+## 12. authClient 方法汇总表
+
+### 认证方法
+
+| 方法 | HTTP | 路径 | 说明 |
+|------|------|------|------|
+| `signIn.email()` | POST | `/sign-in/email` | 邮箱登录 |
+| `signIn.username()` | POST | `/sign-in/username` | 用户名登录（插件） |
+| `signIn.social()` | POST | `/sign-in/social` | OAuth 登录 |
+| `signUp.email()` | POST | `/sign-up/email` | 邮箱注册 |
+| `signOut()` | POST | `/sign-out` | 登出 |
+
+### Session 方法
+
+| 方法 | HTTP | 路径 | 说明 |
+|------|------|------|------|
+| `useSession()` | GET | `/session` | React hook |
+| `getSession()` | GET | `/session` | 获取 session |
+| `listSessions()` | GET | `/list-sessions` | 查看所有登录 |
+| `revokeSessions()` | POST | `/revoke-sessions` | 撤销所有登录 |
+| `revokeOtherSessions()` | POST | `/revoke-other-sessions` | 撤销其他登录 |
+| `revokeSession()` | POST | `/revoke-session` | 撤销指定登录 |
+
+### 用户方法
+
+| 方法 | HTTP | 路径 | 说明 |
+|------|------|------|------|
+| `updateUser()` | POST | `/update-user` | 更新信息 |
+| `changeEmail()` | POST | `/change-email` | 修改邮箱 |
+| `changePassword()` | POST | `/change-password` | 修改密码 |
+| `setPassword()` | POST | `/set-password` | 设置密码 |
+| `deleteUser()` | POST | `/delete-user` | 删除账户 |
+
+### 验证方法
+
+| 方法 | HTTP | 路径 | 说明 |
+|------|------|------|------|
+| `sendVerificationEmail()` | POST | `/send-verification-email` | 发送验证邮件 |
+| `verifyEmail()` | POST | `/verify-email` | 验证邮箱 |
+| `requestPasswordReset()` | POST | `/request-password-reset` | 请求重置密码 |
+| `resetPassword()` | POST | `/reset-password` | 重置密码 |
+
+### 账户方法
+
+| 方法 | HTTP | 路径 | 说明 |
+|------|------|------|------|
+| `listUserAccounts()` | GET | `/list-user-accounts` | 查看关联账户 |
+| `linkSocialAccount()` | POST | `/link-social-account` | 关联社交账户 |
+| `unlinkAccount()` | POST | `/unlink-account` | 解绑账户 |
+| `getAccessToken()` | GET | `/access-token` | 获取 OAuth token |
+
+### 用户名插件方法
+
+| 方法 | HTTP | 路径 | 说明 |
+|------|------|------|------|
+| `signIn.username()` | POST | `/sign-in/username` | 用户名登录 |
+| `isUsernameAvailable()` | POST | `/is-username-available` | 检查用户名 |
+
+---
+
+## 13. 错误处理
+
+### 错误结构
+
+```tsx
+result = {
+  data: null,
+  error: {
+    message: "Invalid email or password",
+    code: "INVALID_EMAIL_OR_PASSWORD",
+    status: 401,
+  },
+};
+```
+
+### 常见错误码
+
+| 错误码 | 说明 |
+|--------|------|
+| `INVALID_EMAIL_OR_PASSWORD` | 邮箱或密码错误 |
+| `USER_ALREADY_EXISTS` | 用户已存在 |
+| `EMAIL_NOT_VERIFIED` | 邮箱未验证 |
+| `USERNAME_TOO_SHORT` | 用户名太短 |
+| `USERNAME_TOO_LONG` | 用户名太长 |
+| `INVALID_USERNAME` | 用户名格式错误 |
+| `USERNAME_IS_ALREADY_TAKEN` | 用户名已被占用 |
+| `PASSWORD_TOO_SHORT` | 密码太短 |
+| `PASSWORD_TOO_LONG` | 密码太长 |
+| `UNAUTHORIZED` | 未授权 |
+| `FORBIDDEN` | 禁止访问 |
+
+### 错误处理示例
+
+```tsx
+const result = await authClient.signIn.email({
+  email: "user@example.com",
+  password: "wrong-password",
+});
+
+if (result.error) {
+  switch (result.error.code) {
+    case "INVALID_EMAIL_OR_PASSWORD":
+      toast.error("邮箱或密码错误");
+      break;
+    case "EMAIL_NOT_VERIFIED":
+      toast.error("请先验证邮箱");
+      // 可以重新发送验证邮件
+      await authClient.sendVerificationEmail({ email });
+      break;
+    default:
+      toast.error(result.error.message);
+  }
+}
+```
+
+---
+
 ## 参考资源
 
 - [Better-Auth 官方文档](https://better-auth.com)
 - [Better-Auth GitHub](https://github.com/better-auth/better-auth)
 - [Better-Auth Next.js 指南](https://better-auth.com/docs/integrations/next)
 - [Better-Auth 数据库适配器](https://better-auth.com/docs/adapters)
+- [Username 插件文档](https://better-auth.com/docs/plugins/username)
+- [Two Factor 插件文档](https://better-auth.com/docs/plugins/two-factor)
+- [Admin 插件文档](https://better-auth.com/docs/plugins/admin)
